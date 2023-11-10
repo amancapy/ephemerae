@@ -20,21 +20,22 @@ def get_words():
             verbs = [item.split() for item in verbs]
             verbs = [item for sublist in verbs for item in sublist]
 
-    return list(noun_dict.keys()), verbs
+    return set(noun_dict.keys()), set(verbs)
 
 
 nouns, verbs = get_words()
 
-wordset = set(nouns + verbs)
-vecs = {}
+
+vecs = [{}, {}]
 with open("glove.6B/glove.6B.300d.txt", "r") as f:
     f = f.readlines()
     for l in f:
         l = l.split()
-        if l[0] in wordset:
-            vecs[l[0]] = [float(item) for item in l[1:]]
+        if l[0] in nouns:
+            vecs[0][l[0]] = [float(item) for item in l[1:]]
+        elif l[0] in verbs:
+            vecs[1][l[0]] = [float(item) for item in l[1:]]
 
-print(len(vecs))
 
 with open("vecs.pkl", "wb") as f:
     pickle.dump(vecs, f)
