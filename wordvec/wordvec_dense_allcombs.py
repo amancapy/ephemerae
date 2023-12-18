@@ -30,10 +30,8 @@ def l2(a, b):
 
 
 batch_size = 64
-all_combinations = list(combinations(range(60), 2))[:4]
-dist_mat = {i: {j: 0 for j in range(60)} for i in range(60)}
-dist_mat = Manager().dict(dist_mat)
-
+all_combinations = list(combinations(range(60), 2))[:5]
+dist_mat = Manager().dict({(i, j): 0 for i in range(60) for j in range(60)})
 
 def train_test_over_these_indices(inp):
     gpus = tf.config.experimental.list_physical_devices('GPU')
@@ -109,10 +107,10 @@ def train_test_over_these_indices(inp):
         t2_to_p1 = l2(t2, p1)
         t2_to_p2 = l2(t2, p2)
 
-        dist_mat[comb[0]][comb[0]] += t1_to_p1
-        dist_mat[comb[0]][comb[1]] += t1_to_p2
-        dist_mat[comb[1]][comb[0]] += t2_to_p1
-        dist_mat[comb[1]][comb[1]] += t2_to_p2
+        dist_mat[(comb[0], comb[0])] += t1_to_p1
+        dist_mat[(comb[0], comb[1])] += t1_to_p2
+        dist_mat[(comb[1], comb[0])] += t2_to_p1
+        dist_mat[(comb[1], comb[1])] += t2_to_p2
 
         correct = t1_to_p1 + t2_to_p2
         incorrect = t1_to_p2 + t2_to_p1
@@ -121,8 +119,17 @@ def train_test_over_these_indices(inp):
 
         pbar.set_description(f"accuracy: {correct_count / (i + 1):.3f}")
 
-
 pool = Pool()
-chunks = np.array_split(all_combinations, 4)
+chunks = np.array_split(all_combinations, 5)
 pool.map(train_test_over_these_indices, [(chunk, i) for i, chunk in enumerate(chunks)])
-open("dist_mat.json", "w+").write(json.dumps(dict(dist_mat)))
+
+dist_mat_ = [[0 for _ in range(60)] for _ in range(60)]
+for comb in dist_mat:
+    dist_mat_[comb[0]][comb[1]] += dist_mat[comb]
+for i in range(60):
+    dist_mat_[i][i] = dist_mat_[i][i] / 60
+
+dist_mat = dist_mat_
+del dist_mat_
+
+open("dist_mat.json", "w+").writelines(json.dumps(dist_mat))
