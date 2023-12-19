@@ -3,13 +3,12 @@ from numpy import dot
 from numpy.linalg import norm
 import pickle
 from tqdm import tqdm
-import gc
 from itertools import combinations
 import json
-
 from multiprocessing import Pool, Manager
 import os
-os.environ["TF_CPP_MIN_LOG_LEVEL"] = "2"
+
+os.environ["TF_CPP_MIN_LOG_LEVEL"] = "3"
 import tensorflow as tf
 from keras import models, layers, losses, optimizers, regularizers, Model
 
@@ -30,8 +29,9 @@ def l2(a, b):
 
 
 batch_size = 64
-all_combinations = list(combinations(range(60), 2))[:5]
+all_combinations = list(combinations(range(60), 2))[:8]
 dist_mat = Manager().dict({(i, j): 0 for i in range(60) for j in range(60)})
+conf_mat = Manager().dict({(i, j): 0 for i in range(60) for j in range(60)})
 
 def train_test_over_these_indices(inp):
     gpus = tf.config.experimental.list_physical_devices('GPU')
@@ -107,6 +107,11 @@ def train_test_over_these_indices(inp):
         t2_to_p1 = l2(t2, p1)
         t2_to_p2 = l2(t2, p2)
 
+        if t1_to_p2 < t1_to_p1:
+            conf_mat[(comb[0], comb[1])] = t1_to_p1 - t1_to_p2
+        if t2_to_p1 < t2_to_p2:
+            conf_mat[(comb[1], comb[0])] = t2_to_p2 - t2_to_p1
+
         dist_mat[(comb[0], comb[0])] += t1_to_p1
         dist_mat[(comb[0], comb[1])] += t1_to_p2
         dist_mat[(comb[1], comb[0])] += t2_to_p1
@@ -119,8 +124,9 @@ def train_test_over_these_indices(inp):
 
         pbar.set_description(f"accuracy: {correct_count / (i + 1):.3f}")
 
+
 pool = Pool()
-chunks = np.array_split(all_combinations, 5)
+chunks = np.array_split(all_combinations, 8)
 pool.map(train_test_over_these_indices, [(chunk, i) for i, chunk in enumerate(chunks)])
 
 dist_mat_ = [[0 for _ in range(60)] for _ in range(60)]
@@ -128,8 +134,14 @@ for comb in dist_mat:
     dist_mat_[comb[0]][comb[1]] += dist_mat[comb]
 for i in range(60):
     dist_mat_[i][i] = dist_mat_[i][i] / 60
+    
+conf_mat_ = [[0 for _ in range(60)] for _ in range(60)]
+for comb in dist_mat:
+    conf_mat_[comb[0]][comb[1]] += conf_mat[comb]
 
 dist_mat = dist_mat_
-del dist_mat_
+conf_mat = conf_mat_
+del dist_mat_, conf_mat_
 
-open("dist_mat.json", "w+").writelines(json.dumps(dist_mat))
+open("matrices/dist_mat.json", "w+").writelines(json.dumps(dist_mat))
+open("matrices/conf_mat.json", "w+").writelines(json.dumps(conf_mat))
