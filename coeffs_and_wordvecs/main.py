@@ -53,16 +53,16 @@ def l2(a, b):
 class CoeffPred(Model):
     def __init__(self):
         super().__init__()
-        self.d1 = layers.Dense(64, activation="relu", kernel_regularizer=regularizers.l1_l2(0.03, 0.03), bias_regularizer=regularizers.l1_l2(0.03, 0.03))
-        self.d2 = layers.Dense(32, activation="relu", kernel_regularizer=regularizers.l1_l2(0.03, 0.03), bias_regularizer=regularizers.l1_l2(0.03, 0.03))
-        self.dn = layers.Dense(25, activation="sigmoid", kernel_regularizer=regularizers.l1_l2(0.03, 0.03), bias_regularizer=regularizers.l1_l2(0.03, 0.03))
+        self.d1 = layers.Dense(64, activation="relu")
+        self.d2 = layers.Dense(32, activation="relu")
+        self.dn = layers.Dense(25, activation="sigmoid")
         
     @tf.function(reduce_retracing=True)
     def call(self, x):
         x = self.d1(x)
         x = self.d2(x)
         x = self.dn(x)
-        x /= tf.norm(x, axis=0, keepdims=True)
+        x /= tf.norm(x, axis=-1, keepdims=True)
         return x
     
 
@@ -84,13 +84,13 @@ for i, comb in enumerate(pbar):
 
     model = CoeffPred()
     loss = losses.MeanSquaredError()
-    opt = optimizers.Adam(0.0005)
+    opt = optimizers.Adam(0.001)
     
     train_x, test_x = tf.gather(x, comb), tf.gather(x, comp)
     train_y, test_y = tf.gather(y, comb), tf.gather(y, comp)
 
     batchlosses = []
-    for j in range(1500):
+    for j in range(3000):
         idx1 = tf.random.uniform(shape=[batch_size], minval=0, maxval=tf.shape(train_x)[0], dtype=tf.int32)
         idx2 = tf.random.uniform(shape=[batch_size], minval=0, maxval=tf.shape(train_x)[0], dtype=tf.int32)
 
