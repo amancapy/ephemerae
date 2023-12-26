@@ -5,8 +5,9 @@ import pickle
 from tqdm import tqdm
 from itertools import combinations
 import json
-from multiprocessing import Pool, Manager
+from multiprocessing import Pool, Manager, Value
 import os
+import gc
 
 os.environ["TF_CPP_MIN_LOG_LEVEL"] = "3"
 import tensorflow as tf
@@ -33,7 +34,13 @@ all_combinations = list(combinations(range(60), 2))
 dist_mat = Manager().dict({(i, j): 0 for i in range(60) for j in range(60)})
 conf_mat = Manager().dict({(i, j): 0 for i in range(60) for j in range(60)})
 
+
+count = Value("i", 0)
+correct_count = Value("i", 0)
+
 def train_test_over_these_indices(inp):
+    global count, correct_count
+
     gpus = tf.config.experimental.list_physical_devices('GPU')
     for gpu in gpus:
         tf.config.experimental.set_memory_growth(gpu, True)
@@ -44,26 +51,23 @@ def train_test_over_these_indices(inp):
         def __init__(self):
             super().__init__()
             self.basis = tf.Variable(tf.convert_to_tensor([verbs[verb] for verb in verbs]), trainable=False, name="verb_basis")
-            self.d1 = layers.Dense(64, activation="relu", kernel_regularizer=regularizers.l1_l2(0.03, 0.03), bias_regularizer=regularizers.l1_l2(0.03, 0.03))
-            self.d2 = layers.Dense(64, activation="relu", kernel_regularizer=regularizers.l1_l2(0.03, 0.03), bias_regularizer=regularizers.l1_l2(0.03, 0.03))
-            self.d3 = layers.Dense(50, activation="linear", kernel_regularizer=regularizers.l1_l2(0.03, 0.03), use_bias=False)
-
-            # self.dn = layers.Dense(self.basis.shape[0], activation="sigmoid")
+            self.d1 = layers.Dense(64, activation="relu")
+            self.d2 = layers.Dense(32, activation="relu")
+            self.dn = layers.Dense(self.basis.shape[0], activation="sigmoid")
             
         @tf.function(reduce_retracing=True)
         def call(self, x):
             x = self.d1(x)
             x = self.d2(x)
-            x = self.d3(x)
-
-            # x = x / tf.reduce_sum(x, axis=-1, keepdims=True)
-            # x = tf.einsum("bi,ij->bj", x, self.basis)
+            x = self.dn(x)
+            x = x / tf.reduce_sum(x, axis=-1, keepdims=True)
+            
+            x = tf.einsum("bi,ij->bj", x, self.basis)
             
             return x
     
 
     idxs, j = inp
-    correct_count = 0
 
     x = np.array([item[0] for item in pickles])
     y = [item[1] for item in pickles]
@@ -71,8 +75,10 @@ def train_test_over_these_indices(inp):
 
     x, y = tf.cast(x, tf.dtypes.float32), tf.cast(y, tf.dtypes.float32)
     
-    pbar = tqdm(idxs, position=j)
+    pbar = tqdm(idxs)
     for i, comb in enumerate(pbar):
+        gc.collect()
+
         comp = sorted(list(set.difference(set(range(60)), set(comb))))
 
         model = BasisSum()
@@ -129,14 +135,15 @@ def train_test_over_these_indices(inp):
         correct = t1_to_p1 + t2_to_p2
         incorrect = t1_to_p2 + t2_to_p1
 
-        correct_count += int(correct < incorrect)
+        correct_count.value += int(correct < incorrect)
+        count.value += 1
 
-        pbar.set_description(f"accuracy: {correct_count / (i + 1):.3f}")
+        pbar.set_description(f"accuracy: {correct_count.value / (count.value + 1):.3f}")
 
 
-pool = Pool()
-chunks = np.array_split(all_combinations, 4)
-pool.map(train_test_over_these_indices, [(chunk, i) for i, chunk in enumerate(chunks)])
+processes = 8
+chunks = np.array_split(all_combinations, processes)
+Pool(processes=processes).map(train_test_over_these_indices, [(chunk, i) for i, chunk in enumerate(chunks)])
 
 dist_mat_ = [[0 for _ in range(60)] for _ in range(60)]
 for comb in dist_mat:

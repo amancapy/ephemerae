@@ -29,13 +29,10 @@ def l2(a, b):
 
 
 batch_size = 64
-n = 10
+n = 2
 m = 2000
 all_combinations = combinations(range(60), n)
-all_combinations = [comb for comb, i in zip(all_combinations, range(m))]
-
-dist_mat = Manager().dict({(i, j): 0 for i in range(60) for j in range(60)})
-conf_mat = Manager().dict({(i, j): 0 for i in range(60) for j in range(60)})
+all_combinations = [comb for comb, _ in zip(all_combinations, range(m))]
 
 def train_test_over_these_indices(inp):
     gpus = tf.config.experimental.list_physical_devices('GPU')
@@ -50,7 +47,8 @@ def train_test_over_these_indices(inp):
             self.basis = tf.Variable(tf.convert_to_tensor([verbs[verb] for verb in verbs]), trainable=False, name="verb_basis")
             self.d1 = layers.Dense(64, activation="relu", kernel_regularizer=regularizers.l1_l2(0.05, 0.05), bias_regularizer=regularizers.l1_l2(0.05, 0.05))
             self.d2 = layers.Dense(64, activation="relu", kernel_regularizer=regularizers.l1_l2(0.05, 0.05), bias_regularizer=regularizers.l1_l2(0.05, 0.05))
-            self.d3 = layers.Dense(50, activation="linear", kernel_regularizer=regularizers.l1_l2(0.05, 0.05), use_bias=False)
+            self.d3 = layers.Dense(64, activation="relu", kernel_regularizer=regularizers.l1_l2(0.05, 0.05), bias_regularizer=regularizers.l1_l2(0.05, 0.05))
+            self.d4 = layers.Dense(50, activation="linear", kernel_regularizer=regularizers.l1_l2(0.05, 0.05), use_bias=False)
 
             # self.dn = layers.Dense(self.basis.shape[0], activation="sigmoid")
             
@@ -59,6 +57,7 @@ def train_test_over_these_indices(inp):
             x = self.d1(x)
             x = self.d2(x)
             x = self.d3(x)
+            x = self.d4(x)
 
             # x = x / tf.reduce_sum(x, axis=-1, keepdims=True)
             # x = tf.einsum("bi,ij->bj", x, self.basis)
@@ -78,7 +77,7 @@ def train_test_over_these_indices(inp):
     pbar = tqdm(idxs, position=j)
     for i, comb in enumerate(pbar):
         gc.collect()
-        comp = sorted(list(set.difference(set(range(60)), set(comb))))
+        comp = [i for i in range(60) if i not in comb]
 
         model = BasisSum()
         loss = losses.MeanSquaredError()
@@ -88,7 +87,7 @@ def train_test_over_these_indices(inp):
         train_y, test_y = tf.gather(y, comp), tf.gather(y, comb)
 
         batchlosses = []
-        for j in range(100):
+        for j in range(5000):
             idx1 = tf.random.uniform(shape=[batch_size], minval=0, maxval=tf.shape(train_x)[0], dtype=tf.int32)
             idx2 = tf.random.uniform(shape=[batch_size], minval=0, maxval=tf.shape(train_x)[0], dtype=tf.int32)
 
@@ -108,6 +107,7 @@ def train_test_over_these_indices(inp):
                 if j % 100 == 0:
                     ...
                     # print(j, sum(batchlosses[-100:]) / 100)
+                    batchlosses = []
 
         pred = model(test_x).numpy()
         test_y = test_y.numpy()
