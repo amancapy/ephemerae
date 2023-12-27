@@ -29,19 +29,30 @@ def l2(a, b):
     return norm(np.subtract(a, b))
 
 
+def get_coeff_vecs():
+    with open(f"data/coeff_vecs.txt", "r") as f:
+        f = f.read().split("\n\n\n")
+        noun_dict = {}
+        for noun_vec in f:
+            split = noun_vec.split("\n\n")
+            noun = split[0].split()[2][:-1]
+            
+            vec = split[1]
+            vec = [item.strip().replace("(", "").replace(")", "") for item in vec.split(",\n")]
+            vec = [(item.split()[:-1], item.split()[-1]) for item in vec]
+
+            vec = sorted(vec, key=lambda x: x[0])
+            vec = {item[0][0]: float(item[1]) for item in vec}
+
+            noun_dict[noun] = vec
+
+    return noun_dict
+
+coeff_vecs = get_coeff_vecs()
+coeff_vecs = {k: [coeff_vecs[k][verb] for verb in verbs] for k in coeff_vecs}
+
+
 batch_size = 64
-def get_batch(x, y):
-    batch_x = tf.tile(tf.expand_dims(x, 0), (batch_size, 1, 1))
-    batch_y = tf.tile(tf.expand_dims(y, 0), (batch_size, 1, 1))
-
-    ratios = tf.random.normal((batch_size, x.shape[0]), 0, 10)
-    ratios = tf.math.softmax(ratios)
-
-    batch_x = tf.einsum("ijk, ij -> ik", batch_x, ratios)
-    batch_y = tf.einsum("ijk, ij -> ik", batch_y, ratios)
-
-    return batch_x, batch_y
-
 all_combinations = list(combinations(range(60), 2))
 dist_mat = Manager().dict({(i, j): 0 for i in range(60) for j in range(60)})
 conf_mat = Manager().dict({(i, j): 0 for i in range(60) for j in range(60)})
@@ -50,7 +61,7 @@ conf_mat = Manager().dict({(i, j): 0 for i in range(60) for j in range(60)})
 count = Value("i", 0)
 correct_count = Value("i", 0)
 
-def train_test_over_these_indices(idxs):
+def train_test_over_these_indices(comb):
     global count, correct_count
 
     gpus = tf.config.experimental.list_physical_devices('GPU')
@@ -62,10 +73,9 @@ def train_test_over_these_indices(idxs):
     class BasisSum(Model):
         def __init__(self):
             super().__init__()
-            self.basis = tf.Variable(tf.convert_to_tensor([verbs[verb] for verb in verbs]), trainable=False, name="verb_basis")
             self.d1 = layers.Dense(64, activation="relu")
             self.d2 = layers.Dense(32, activation="relu")
-            self.dn = layers.Dense(50, activation="linear")
+            self.dn = layers.Dense(25, activation="sigmoid")
             
         @tf.function(reduce_retracing=True)
         def call(self, x):
@@ -78,27 +88,37 @@ def train_test_over_these_indices(idxs):
             
             return x
     
+    basis = tf.convert_to_tensor([verbs[verb] for verb in verbs])
 
     x = np.array([item[0] for item in pickles])
     y = [item[1] for item in pickles]
-    y = np.array([nouns[item] for item in y])
+    y_coeffs = np.array([coeff_vecs[item] for item in y])
+    y_wordvecs = np.array([nouns[item] for item in y])
 
-    x, y = tf.cast(x, tf.dtypes.float32), tf.cast(y, tf.dtypes.float32)
+    x, y_coeffs = tf.cast(x, tf.dtypes.float32), tf.cast(y_coeffs, tf.dtypes.float32)
     
     gc.collect()
 
-    comp = [i for i in range(60) if i not in idxs]
+    comp = [i for i in range(60) if i not in comb]
 
     model = BasisSum()
     loss = losses.MeanSquaredError()
     opt = optimizers.Adam(0.001)
     
-    train_x, test_x = tf.gather(x, comp), tf.gather(x, idxs)
-    train_y, test_y = tf.gather(y, comp), tf.gather(y, idxs)
+    train_x, test_x = tf.gather(x, comp), tf.gather(x, comb)
+    train_y, test_y = tf.gather(y_coeffs, comp), tf.gather(y_wordvecs, comb)
 
     batchlosses = []
     for j in range(5000):
-        batch_x, batch_y = get_batch(train_x, train_y)
+        idx1 = tf.random.uniform(shape=[batch_size], minval=0, maxval=tf.shape(train_x)[0], dtype=tf.int32)
+        idx2 = tf.random.uniform(shape=[batch_size], minval=0, maxval=tf.shape(train_x)[0], dtype=tf.int32)
+
+        batch_x1, batch_y1 = tf.gather(train_x, idx1), tf.gather(train_y, idx1)
+        batch_x2, batch_y2 = tf.gather(train_x, idx2), tf.gather(train_y, idx2)
+
+        ratios = tf.random.uniform((len(batch_x1), 1), 0, 1)
+        batch_x = batch_x1 * ratios + batch_x2 * (1 - ratios)
+        batch_y = batch_y1 * ratios + batch_y2 * (1 - ratios)
 
         with tf.GradientTape() as tape:
             pred_y = model(batch_x)
@@ -108,12 +128,12 @@ def train_test_over_these_indices(idxs):
             batchlosses.append(float(batchloss))
             if j % 100 == 0:
                 ...
-                print(j, sum(batchlosses[-100:]) / 100)
+                # print(j, sum(batchlosses[-100:]) / 100)
 
     pred = model(test_x)
     t1, t2 = test_y.numpy()
     t1, t2 = t1.flat, t2.flat
-    p1, p2 = pred.numpy()
+    p1, p2 = tf.einsum("bi,ij->bj", pred, basis).numpy()
     p1, p2 = p1.flat, p2.flat
 
     t1_to_p1 = l2(t1, p1)
@@ -122,15 +142,15 @@ def train_test_over_these_indices(idxs):
     t2_to_p2 = l2(t2, p2)
 
     if t1_to_p2 < t1_to_p1:
-        conf_mat[(idxs[0], idxs[1])] = t1_to_p1 / t1_to_p2
+        conf_mat[(comb[0], comb[1])] = t1_to_p1 / t1_to_p2
     
     if t2_to_p1 < t2_to_p2:
-        conf_mat[(idxs[1], idxs[0])] = t2_to_p2 / t2_to_p1
+        conf_mat[(comb[1], comb[0])] = t2_to_p2 / t2_to_p1
 
-    dist_mat[(idxs[0], idxs[0])] += t1_to_p1
-    dist_mat[(idxs[0], idxs[1])] += t1_to_p2
-    dist_mat[(idxs[1], idxs[0])] += t2_to_p1
-    dist_mat[(idxs[1], idxs[1])] += t2_to_p2
+    dist_mat[(comb[0], comb[0])] += t1_to_p1
+    dist_mat[(comb[0], comb[1])] += t1_to_p2
+    dist_mat[(comb[1], comb[0])] += t2_to_p1
+    dist_mat[(comb[1], comb[1])] += t2_to_p2
 
     correct = t1_to_p1 + t2_to_p2
     incorrect = t1_to_p2 + t2_to_p1
@@ -138,15 +158,17 @@ def train_test_over_these_indices(idxs):
     correct_count.value += int(correct < incorrect)
     count.value += 1
 
+    del model
 
-processes = 6
+
+processes = 16
 chunks = np.array_split(range(1770), 1770 // processes)
 
 for chunk in chunks:
     print(chunk[0], end=" ")
 
     t = ptime()
-    Pool(processes=processes).map(train_test_over_these_indices, all_combinations[chunk[0]:chunk[-1]+1])
+    Pool(processes=processes).map(train_test_over_these_indices, all_combinations[chunk[0]:chunk[-1]])
     print(correct_count.value / (count.value + 1), ptime() - t)
 
 
@@ -165,5 +187,5 @@ dist_mat = dist_mat_
 conf_mat = conf_mat_
 del dist_mat_, conf_mat_
 
-open("leave2/dist_mat_coeffs.json", "w+").writelines(json.dumps(dist_mat))
-open("leave2/conf_mat_coeffs.json", "w+").writelines(json.dumps(conf_mat))
+open("leave2/dist_mat_wordvec.json", "w+").writelines(json.dumps(dist_mat))
+open("leave2/conf_mat_wordvec.json", "w+").writelines(json.dumps(conf_mat))
