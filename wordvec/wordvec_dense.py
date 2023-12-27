@@ -8,27 +8,30 @@ import gc
 from itertools import combinations
 
 import os
-os.environ["TF_CPP_MIN_LOG_LEVEL"] = "3"
+os.environ["TF_CPP_MIN_LOG_LEVEL"] = "2"
 import tensorflow as tf
 from keras import models, layers, losses, optimizers, regularizers, Model
-gc.collect()
+
+
 brain_index = pickle.load(open("data/support.pkl", "rb"))
-noun_vecs, verb_vecs = pickle.load(open("data/vecs.pkl", "rb"))
+nouns, verbs = pickle.load(open("data/vecs.pkl", "rb"))
 
 pickles = [pickle.load(open(f"data/pickles/{i}.pkl", "rb")) for i in range(1)]
 pickles = [item for sublist in pickles for item in sublist]
 pickles = sorted(pickles, key=lambda x: x[1])
-pickles = [[item for item in pickles if item[1] == noun] for noun in noun_vecs]
+pickles = [[item for item in pickles if item[1] == noun] for noun in nouns]
 pickles = [(np.add.reduce([item[0] for item in sublist]) / len(sublist), sublist[0][1]) for sublist in pickles]
 pickles = [(item[0][brain_index], item[1]) for item in pickles]
 
-len(noun_vecs), len(verb_vecs)
+
 def l2(a, b):
     return norm(np.subtract(a, b))
+
+
 class BasisSum(Model):
     def __init__(self):
         super().__init__()
-        self.basis = tf.Variable(tf.convert_to_tensor([verb_vecs[verb] for verb in verb_vecs]), trainable=False, name="verb_basis")
+        self.basis = tf.Variable(tf.convert_to_tensor([verbs[verb] for verb in verbs]), trainable=False, name="verb_basis")
         self.d1 = layers.Dense(64, activation="relu")
         self.d2 = layers.Dense(32, activation="relu")
         self.dn = layers.Dense(self.basis.shape[0], activation="sigmoid")
@@ -38,35 +41,36 @@ class BasisSum(Model):
         x = self.d1(x)
         x = self.d2(x)
         x = self.dn(x)
-        x = x / tf.norm(x, axis=0, keepdims=True)
+        x = x / tf.reduce_sum(x, axis=-1, keepdims=True)
         
         x = tf.einsum("bi,ij->bj", x, self.basis)
         
         return x
-total = 500
+
+
 batch_size = 64
 pbar = tqdm(combinations(range(60), 58), total=1770)
 
 x = np.array([item[0] for item in pickles])
 y = [item[1] for item in pickles]
-y = np.array([noun_vecs[item] for item in y])
+y = np.array([nouns[item] for item in y])
 
 x, y = tf.cast(x, tf.dtypes.float32), tf.cast(y, tf.dtypes.float32)
-
 correct_count = 0
 
 for i, comb in enumerate(pbar):
-    comp = list(set.difference(set(range(60)), set(comb)))
+    gc.collect()
+    comp = [j for j in range(60) if j not in comb]
 
     model = BasisSum()
     loss = losses.MeanSquaredError()
-    opt = optimizers.Adam(0.005)
+    opt = optimizers.Adam(0.001)
 
     train_x, test_x = tf.gather(x, comb), tf.gather(x, comp)
     train_y, test_y = tf.gather(y, comb), tf.gather(y, comp)
 
     batchlosses = []
-    for j in range(2000):
+    for j in range(5000):
         idx1 = tf.random.uniform(shape=[batch_size], minval=0, maxval=tf.shape(train_x)[0], dtype=tf.int32)
         idx2 = tf.random.uniform(shape=[batch_size], minval=0, maxval=tf.shape(train_x)[0], dtype=tf.int32)
 
@@ -86,10 +90,9 @@ for i, comb in enumerate(pbar):
             batchlosses.append(float(batchloss))
 
         if j % 100 == 0:
-            ...
             print(j, sum(batchlosses[-100:]) / 100)
-
-
+            ...
+            
     pred = model(test_x)
     t1, t2 = test_y.numpy()
     t1, t2 = t1.flat, t2.flat

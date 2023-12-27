@@ -2,7 +2,7 @@ import numpy as np
 from numpy import dot
 from numpy.linalg import norm
 import pickle
-from tqdm import tqdm
+from time import perf_counter as ptime
 from itertools import combinations
 import json
 from multiprocessing import Pool, Manager, Value
@@ -38,7 +38,7 @@ conf_mat = Manager().dict({(i, j): 0 for i in range(60) for j in range(60)})
 count = Value("i", 0)
 correct_count = Value("i", 0)
 
-def train_test_over_these_indices(inp):
+def train_test_over_these_indices(idxs):
     global count, correct_count
 
     gpus = tf.config.experimental.list_physical_devices('GPU')
@@ -67,93 +67,90 @@ def train_test_over_these_indices(inp):
             return x
     
 
-    idxs, j = inp
-
     x = np.array([item[0] for item in pickles])
     y = [item[1] for item in pickles]
     y = np.array([nouns[item] for item in y])
 
     x, y = tf.cast(x, tf.dtypes.float32), tf.cast(y, tf.dtypes.float32)
     
-    pbar = tqdm(idxs)
-    for i, comb in enumerate(pbar):
-        gc.collect()
+    gc.collect()
 
-        comp = sorted(list(set.difference(set(range(60)), set(comb))))
+    comp = [i for i in range(60) if i not in idxs]
 
-        model = BasisSum()
-        loss = losses.MeanSquaredError()
-        opt = optimizers.Adam(0.001)
-        
-        train_x, test_x = tf.gather(x, comp), tf.gather(x, comb)
-        train_y, test_y = tf.gather(y, comp), tf.gather(y, comb)
+    model = BasisSum()
+    loss = losses.MeanSquaredError()
+    opt = optimizers.Adam(0.001)
+    
+    train_x, test_x = tf.gather(x, comp), tf.gather(x, idxs)
+    train_y, test_y = tf.gather(y, comp), tf.gather(y, idxs)
 
-        batchlosses = []
-        for j in range(5000):
-            idx1 = tf.random.uniform(shape=[batch_size], minval=0, maxval=tf.shape(train_x)[0], dtype=tf.int32)
-            idx2 = tf.random.uniform(shape=[batch_size], minval=0, maxval=tf.shape(train_x)[0], dtype=tf.int32)
+    batchlosses = []
+    for j in range(5000):
+        idx1 = tf.random.uniform(shape=[batch_size], minval=0, maxval=tf.shape(train_x)[0], dtype=tf.int32)
+        idx2 = tf.random.uniform(shape=[batch_size], minval=0, maxval=tf.shape(train_x)[0], dtype=tf.int32)
 
-            batch_x1, batch_y1 = tf.gather(train_x, idx1), tf.gather(train_y, idx1)
-            batch_x2, batch_y2 = tf.gather(train_x, idx2), tf.gather(train_y, idx2)
+        batch_x1, batch_y1 = tf.gather(train_x, idx1), tf.gather(train_y, idx1)
+        batch_x2, batch_y2 = tf.gather(train_x, idx2), tf.gather(train_y, idx2)
 
-            ratios = tf.random.uniform((len(batch_x1), 1), 0, 1)
-            batch_x = batch_x1 * ratios + batch_x2 * (1 - ratios)
-            batch_y = batch_y1 * ratios + batch_y2 * (1 - ratios)
+        ratios = tf.random.uniform((len(batch_x1), 1), 0, 1)
+        batch_x = batch_x1 * ratios + batch_x2 * (1 - ratios)
+        batch_y = batch_y1 * ratios + batch_y2 * (1 - ratios)
 
-            with tf.GradientTape() as tape:
-                pred_y = model(batch_x)
-                batchloss = loss(batch_y, pred_y)
-                grads = tape.gradient(batchloss, model.trainable_variables)
-                opt.apply_gradients(zip(grads, model.trainable_variables))
-                batchlosses.append(float(batchloss))
-                if j % 100 == 0:
-                    ...
-                    # print(j, sum(batchlosses[-100:]) / 100)
+        with tf.GradientTape() as tape:
+            pred_y = model(batch_x)
+            batchloss = loss(batch_y, pred_y)
+            grads = tape.gradient(batchloss, model.trainable_variables)
+            opt.apply_gradients(zip(grads, model.trainable_variables))
+            batchlosses.append(float(batchloss))
+            if j % 100 == 0:
+                ...
+                # print(j, sum(batchlosses[-100:]) / 100)
 
-        pred = model(test_x)
-        t1, t2 = test_y.numpy()
-        t1, t2 = t1.flat, t2.flat
-        p1, p2 = pred.numpy()
-        p1, p2 = p1.flat, p2.flat
+    pred = model(test_x)
+    t1, t2 = test_y.numpy()
+    t1, t2 = t1.flat, t2.flat
+    p1, p2 = pred.numpy()
+    p1, p2 = p1.flat, p2.flat
 
-        t1_to_p1 = l2(t1, p1)
-        t1_to_p2 = l2(t1, p2)
-        t2_to_p1 = l2(t2, p1)
-        t2_to_p2 = l2(t2, p2)
+    t1_to_p1 = l2(t1, p1)
+    t1_to_p2 = l2(t1, p2)
+    t2_to_p1 = l2(t2, p1)
+    t2_to_p2 = l2(t2, p2)
 
-        if t1_to_p2 < t1_to_p1:
-            conf_mat[(comb[0], comb[1])] = t1_to_p1 / t1_to_p2
-        
-        if t2_to_p1 < t2_to_p2:
-            conf_mat[(comb[1], comb[0])] = t2_to_p2 / t2_to_p1
+    if t1_to_p2 < t1_to_p1:
+        conf_mat[(idxs[0], idxs[1])] = t1_to_p1 / t1_to_p2
+    
+    if t2_to_p1 < t2_to_p2:
+        conf_mat[(idxs[1], idxs[0])] = t2_to_p2 / t2_to_p1
 
-        dist_mat[(comb[0], comb[0])] += t1_to_p1
-        dist_mat[(comb[0], comb[1])] += t1_to_p2
-        dist_mat[(comb[1], comb[0])] += t2_to_p1
-        dist_mat[(comb[1], comb[1])] += t2_to_p2
+    dist_mat[(idxs[0], idxs[0])] += t1_to_p1
+    dist_mat[(idxs[0], idxs[1])] += t1_to_p2
+    dist_mat[(idxs[1], idxs[0])] += t2_to_p1
+    dist_mat[(idxs[1], idxs[1])] += t2_to_p2
 
-        correct = t1_to_p1 + t2_to_p2
-        incorrect = t1_to_p2 + t2_to_p1
+    correct = t1_to_p1 + t2_to_p2
+    incorrect = t1_to_p2 + t2_to_p1
 
-        correct_count.value += int(correct < incorrect)
-        count.value += 1
-
-        pbar.set_description(f"accuracy: {correct_count.value / (count.value + 1):.3f}")
+    correct_count.value += int(correct < incorrect)
+    count.value += 1
 
 
-processes = 8
-chunks = np.array_split(all_combinations, processes)
-Pool(processes=processes).map(train_test_over_these_indices, [(chunk, i) for i, chunk in enumerate(chunks)])
+processes = 10
 
+for i in range(0, 1770, processes):
+    print(i, end=" ")
+    t = ptime()
+    Pool(processes=processes).map(train_test_over_these_indices, all_combinations[i:i+processes])
+    print(correct_count.value / (count.value + 1), ptime() - t)
 dist_mat_ = [[0 for _ in range(60)] for _ in range(60)]
-for comb in dist_mat:
-    dist_mat_[comb[0]][comb[1]] += dist_mat[comb]
+for idxs in dist_mat:
+    dist_mat_[idxs[0]][idxs[1]] += dist_mat[idxs]
 for i in range(60):
     dist_mat_[i][i] = dist_mat_[i][i] / 60
     
 conf_mat_ = [[0 for _ in range(60)] for _ in range(60)]
-for comb in conf_mat:
-    conf_mat_[comb[0]][comb[1]] += conf_mat[comb]
+for idxs in conf_mat:
+    conf_mat_[idxs[0]][idxs[1]] += conf_mat[idxs]
 
 dist_mat = dist_mat_
 conf_mat = conf_mat_
