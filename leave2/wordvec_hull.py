@@ -98,17 +98,18 @@ def train_test_over_these_indices(idxs):
 
     batchlosses = []
     for j in range(5000):
-        batch_x, batch_y = get_batch(train_x, train_y)
 
         with tf.GradientTape() as tape:
+            batch_x, batch_y = get_batch(train_x, train_y)
             pred_y = model(batch_x)
             batchloss = loss(batch_y, pred_y)
             grads = tape.gradient(batchloss, model.trainable_variables)
             opt.apply_gradients(zip(grads, model.trainable_variables))
             batchlosses.append(float(batchloss))
-            if j % 100 == 0:
-                ...
-                print(j, sum(batchlosses[-100:]) / 100)
+        
+        if j % 100 == 0:
+            ...
+            # print(j, sum(batchlosses[-100:]) / 100)
 
     pred = model(test_x)
     t1, t2 = test_y.numpy()
